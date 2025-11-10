@@ -67,31 +67,9 @@ python League-Data-Scraping-And-Analytics-master/ProStaff-Scraper/pipelines/cblo
 
 ## Arquitetura
 
-Fluxo de dados e serviços do scraper:
+Para o diagrama completo e detalhes dos componentes, consulte:
 
-```mermaid
-flowchart TB
-  subgraph Fontes_Externas
-    LoLEsports[LoLEsports Persisted Gateway]
-    RiotAPI[Riot Match-V5]
-  end
-
-  subgraph Scraper_Python
-    Providers[Providers<br/>esports.py + riot.py]
-    Pipeline[Pipeline CBLOL<br/>cblol.py]
-    Normalizer[Normalizacao]
-    Indexer[Indexacao<br/>elasticsearch_client.py]
-  end
-
-  subgraph Analytics
-    ES[Elasticsearch<br/>lol_pro_matches, lol_timelines]
-    Kibana[Kibana Dashboards]
-  end
-
-  LoLEsports --> Providers
-  RiotAPI --> Providers
-  Providers --> Pipeline --> Normalizer --> Indexer --> ES --> Kibana
-```
+- `docs/Arquitetura.md`
 
 ## Setup
 
