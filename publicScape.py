@@ -17,6 +17,8 @@
 # continue indefinitely
 
 import urllib.request, json
+import os
+from dotenv import load_dotenv
 import time
 from pathlib import Path
 
@@ -27,8 +29,10 @@ except Exception:
     load_champion_map = None
 
 
-
-apiKey = 'RGAPI-5409d370-8281-4589-b8d0-983bb13e6166'
+load_dotenv()
+apiKey = os.getenv('RIOT_API_KEY', '')
+if not apiKey:
+    raise RuntimeError('RIOT_API_KEY não definido no ambiente (.env).')
 
 UserId = 0
 UsersDone = []
