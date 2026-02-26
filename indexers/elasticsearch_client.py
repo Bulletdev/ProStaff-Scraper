@@ -11,10 +11,10 @@ def get_es_url() -> str:
 def get_client() -> Elasticsearch:
     """Build an Elasticsearch client from ELASTICSEARCH_URL.
 
-    Supports optional credentials embedded in the URL:
-      http://user:pass@host:9200
-    The username/password are extracted and passed via basic_auth so that
-    all elasticsearch-py versions handle authentication correctly.
+    Credentials are resolved in this order:
+    1. Embedded in the URL:  http://user:pass@host:9200
+    2. Separate env vars:    ELASTICSEARCH_USER / ELASTICSEARCH_PASSWORD
+    3. No auth (plain URL)
     """
     url = get_es_url()
     parsed = urlparse(url)
@@ -24,6 +24,15 @@ def get_client() -> Elasticsearch:
         return Elasticsearch(
             clean_url,
             basic_auth=(parsed.username, parsed.password),
+            verify_certs=False,
+        )
+
+    user = os.getenv("ELASTICSEARCH_USER")
+    password = os.getenv("ELASTICSEARCH_PASSWORD")
+    if user and password:
+        return Elasticsearch(
+            url,
+            basic_auth=(user, password),
             verify_certs=False,
         )
 
