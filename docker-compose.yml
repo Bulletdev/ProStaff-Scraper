@@ -1,5 +1,4 @@
 services:
-  # Elasticsearch for analytics search
   elasticsearch:
     image: docker.elastic.co/elasticsearch/elasticsearch:8.13.4
     environment:
@@ -15,8 +14,8 @@ services:
       interval: 10s
       timeout: 5s
       retries: 10
+      start_period: 30s
 
-  # Kibana for exploring ES indices
   kibana:
     image: docker.elastic.co/kibana/kibana:8.13.4
     environment:
@@ -27,10 +26,35 @@ services:
     ports:
       - "${KIBANA_PORT:-5601}:5601"
 
-  # Scraper service (optional runner)
-  scraper:
-    build: .
-    container_name: prostaff-scraper
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile.production
+    container_name: prostaff-scraper-api
+    env_file:
+      - .env
+    volumes:
+      - .:/app
+    ports:
+      - "8000:8000"
+    depends_on:
+      elasticsearch:
+        condition: service_healthy
+    command: ["uvicorn", "api.main:app", "--host", "0.0.0.0", "--port", "8000", "--reload"]
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:8000/health || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+
+  # Enrichment daemon - populates items/runes/KDA via Leaguepedia + Riot API
+  # Runs slowly (1 request per 9s to Leaguepedia) but that's fine for background work.
+  # Disable locally if you don't need enrichment: comment out this service.
+  enrichment:
+    build:
+      context: .
+      dockerfile: Dockerfile.production
     env_file:
       - .env
     volumes:
@@ -38,7 +62,9 @@ services:
     depends_on:
       elasticsearch:
         condition: service_healthy
-    command: ["python", "pipelines/cblol.py", "--league", "CBLOL", "--limit", "50"]
+    # Check every 30min for unenriched games, process up to 50 per batch
+    command: ["python", "etl/enrichment_pipeline.py", "--daemon", "--interval", "30", "--batch", "50"]
+    restart: unless-stopped
 
 volumes:
   es_data:

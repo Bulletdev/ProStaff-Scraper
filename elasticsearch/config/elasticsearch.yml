@@ -1,0 +1,52 @@
+# Elasticsearch Configuration for ProStaff Scraper
+# Optimized for League of Legends competitive match data
+
+cluster.name: prostaff-cluster
+node.name: prostaff-node
+
+# Network settings
+network.host: 0.0.0.0
+http.port: 9200
+
+# Discovery (single-node for small production)
+discovery.type: single-node
+
+# Memory
+bootstrap.memory_lock: true
+
+# Indices configuration
+action.auto_create_index: +lol_*,+.monitoring*,+.watches,+.triggered_watches,+.watcher-history*
+
+# Performance tuning for match data
+indices.memory.index_buffer_size: 20%
+indices.queries.cache.size: 15%
+indices.fielddata.cache.size: 30%
+
+# Thread pools optimized for our use case
+thread_pool:
+  write:
+    size: 4
+    queue_size: 1000
+  search:
+    size: 8
+    queue_size: 1000
+
+# Slow log configuration for monitoring
+index.search.slowlog.threshold.query.warn: 10s
+index.search.slowlog.threshold.query.info: 5s
+index.search.slowlog.threshold.fetch.warn: 1s
+index.search.slowlog.level: info
+
+# CORS settings for development (disable in production if not needed)
+http.cors:
+  enabled: true
+  allow-origin: "*"
+  allow-methods: OPTIONS, HEAD, GET, POST, PUT, DELETE
+  allow-headers: "X-Requested-With,X-Auth-Token,Content-Type,Content-Length,Authorization"
+
+# Disable X-Pack features we don't need (saves resources)
+xpack.security.enabled: false
+xpack.monitoring.enabled: true
+xpack.graph.enabled: false
+xpack.watcher.enabled: false
+xpack.ml.enabled: false

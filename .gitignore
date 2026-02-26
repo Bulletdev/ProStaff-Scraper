@@ -1,2 +1,28 @@
+# Environment files (NEVER commit)
 /jsons
 /Pro
+.env
+.env.production
+.env.local
+
+# Data directories (generated at runtime)
+data/
+logs/
+jsons/
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.egg-info/
+.venv/
+venv/
+.pytest_cache/
+
+# Docker
+.dockerignore
+
+# IDE
+.vscode/
+.idea/
+*.swp

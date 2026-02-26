@@ -1,134 +1,349 @@
 ![Python](https://img.shields.io/badge/python-3.11-3776AB?logo=python)
+![FastAPI](https://img.shields.io/badge/FastAPI-0.115-009688?logo=fastapi)
 ![Elasticsearch](https://img.shields.io/badge/Elasticsearch-8.x-005571?logo=elasticsearch)
-![Kibana](https://img.shields.io/badge/Kibana-8.x-005571?logo=kibana)
 ![Docker](https://img.shields.io/badge/Docker-Compose-2496ED?logo=docker)
 ![License](https://img.shields.io/badge/License-CC%20BY--NC--SA%204.0-lightgrey.svg)
 
-# Scraper de Partidas (CBLOL e Multi-Região)
+# ProStaff Scraper - Professional Match Data API
 
-> Serviço Python desacoplado para coleta e indexação de partidas profissionais em Elasticsearch, 
-> Utilizando LoLEsports (Persisted Gateway) e Riot Match-V5.
+> FastAPI service that scrapes and serves League of Legends professional match data via REST endpoints.
+> Integrates with LoL Esports API and Riot Match-V5, storing data in Elasticsearch for fast queries.
 
-## Tabela de Conteúdos
+## Table of Contents
 
+- [Features](#features)
 - [Quick Start](#quick-start)
+- [Production Deployment (Coolify)](#production-deployment)
 - [Stack Tecnológico](#stack-tecnológico)
 - [Arquitetura](#arquitetura)
-- [Setup](#setup)
-- [Uso](#uso)
+- [API Endpoints](#api-endpoints)
+- [Development Setup](#development-setup)
 - [Estrutura](#estrutura)
 - [Variáveis de Ambiente](#variáveis-de-ambiente)
 - [Troubleshooting](#troubleshooting)
 - [Licença](#licença)
 
+## Features
+
+✅ **FastAPI REST API** - Serve professional match data via HTTP endpoints
+✅ **Elasticsearch Backend** - Fast queries and analytics on match data
+✅ **Automated Syncing** - Cron job for periodic data updates
+✅ **Multi-League Support** - CBLOL, LCS, LEC, LCK, and more
+✅ **Production Ready** - Docker Compose with Traefik/SSL for Coolify deployment
+✅ **Health Checks** - Built-in monitoring endpoints
+
+## Production Deployment
+
+**🚀 Deploy to Coolify**: See detailed instructions in [`DEPLOYMENT.md`](./DEPLOYMENT.md)
+
+**⚡ Quick Start**: See [`QUICKSTART.md`](./QUICKSTART.md) for rapid setup guide
+
+### Summary
+
+1. Create Docker Compose application in Coolify
+2. Point to repository with `docker-compose.production.yml`
+3. Configure environment variables (API keys, sync settings)
+4. Set domain: `scraper.prostaff.gg`
+5. Deploy and verify: `curl https://scraper.prostaff.gg/health`
+
+---
+
+## API Endpoints
+
+### Health & Status
+
+```bash
+GET /health                    # Health check for Coolify
+GET /                          # Root endpoint
+GET /api/v1/stats/leagues      # Match statistics per league
+```
+
+### Match Data
+
+```bash
+GET  /api/v1/leagues                           # List available leagues
+GET  /api/v1/matches?league=CBLOL&limit=50     # Query matches
+GET  /api/v1/matches/{match_id}                # Get specific match
+POST /api/v1/sync?league=CBLOL&limit=50        # Trigger manual sync
+```
+
+**Example Response** (`GET /api/v1/matches?league=CBLOL&limit=2`):
+
+```json
+{
+  "total": 150,
+  "league": "CBLOL",
+  "limit": 2,
+  "skip": 0,
+  "count": 2,
+  "matches": [
+    {
+      "match_id": "BR1_123456789",
+      "league": "CBLOL",
+      "platform_id": "BR1",
+      "game_start": "2026-02-10T18:00:00",
+      "patch": "14.3",
+      "teams": [...],
+      "participants": [...]
+    }
+  ]
+}
+```
+
+See full API documentation at `https://scraper.prostaff.gg/docs` (Swagger UI)
+
+---
+
 <details>
-<summary> Quick Start (clique para expandir) </summary>
+<summary> Development Setup (click to expand) </summary>
 
-### Opção 1: Com Docker (Recomendado)
+### Option 1: Docker (Recommended)
 
 ```bash
-# Subir Elasticsearch e Kibana do stack do scraper
-docker compose -f League-Data-Scraping-And-Analytics-master/ProStaff-Scraper/docker-compose.yml up -d elasticsearch kibana
+# Copy environment variables
+cp .env.example .env
+# Edit .env and add your API keys
 
-# Executar pipeline CBLOL (usa RIOT_API_KEY e ESPORTS_API_KEY do .env do diretório)
-docker compose -f League-Data-Scraping-And-Analytics-master/ProStaff-Scraper/docker-compose.yml run --rm scraper \
-  python pipelines/cblol.py --league CBLOL --limit 50
+# Start Elasticsearch and API server
+docker compose up -d
 
-# Acessar Kibana
-start http://localhost:5601  # Windows
+# Access services
+# API: http://localhost:8000
+# API Docs (Swagger): http://localhost:8000/docs
+# Elasticsearch: http://localhost:9200
+# Kibana: http://localhost:5601
 ```
 
-### Opção 2: Sem Docker (Local)
+### Option 2: Local Development (No Docker)
 
 ```bash
-# Criar virtualenv e instalar dependências (rodando a partir da raiz do repo)
+# Create virtualenv and install dependencies
 python -m venv .venv
-.venv/Scripts/activate  # Windows
-pip install -r League-Data-Scraping-And-Analytics-master/ProStaff-Scraper/requirements.txt
+source .venv/bin/activate  # Linux/Mac
+# or
+.venv\Scripts\activate     # Windows
 
-# Exportar variáveis (ou usar .env do diretório com python-dotenv)
-# Execute o pipeline
-python League-Data-Scraping-And-Analytics-master/ProStaff-Scraper/pipelines/cblol.py --league CBLOL --limit 20
+pip install -r requirements.txt
+
+# Configure environment
+cp .env.example .env
+# Edit .env with your API keys
+
+# Start Elasticsearch separately (or use existing instance)
+# Update ELASTICSEARCH_URL in .env
+
+# Run FastAPI server
+uvicorn api.main:app --reload --port 8000
+
+# Or run scraper pipeline directly
+python pipelines/cblol.py --league CBLOL --limit 20
 ```
 
-**Elasticsearch**: `http://localhost:9200`
-**Kibana**: `http://localhost:5601`
+### Test the API
+
+```bash
+# Health check
+curl http://localhost:8000/health
+
+# List leagues
+curl http://localhost:8000/api/v1/leagues
+
+# Sync matches (this will take a few minutes)
+curl -X POST "http://localhost:8000/api/v1/sync?league=CBLOL&limit=10"
+
+# Query matches
+curl "http://localhost:8000/api/v1/matches?league=CBLOL&limit=5"
+```
 
 </details>
 
 ## Stack Tecnológico
 
-- **Linguagem**: Python 3.11
-- **HTTP Client**: httpx com `tenacity` (backoff/retry)
-- **Modelagem**: pydantic
-- **Serialização**: orjson
-- **Configuração**: python-dotenv
-- **Busca/Analytics**: Elasticsearch 8.x + Kibana 8.x
+- **Framework**: FastAPI 0.115 (async REST API)
+- **Server**: Uvicorn (ASGI server)
+- **Language**: Python 3.11
+- **HTTP Client**: httpx with `tenacity` (backoff/retry)
+- **Data Validation**: Pydantic 2.9
+- **JSON**: orjson (fast serialization)
+- **Config**: python-dotenv
+- **Storage**: Elasticsearch 8.x
+- **Deployment**: Docker Compose + Traefik (Coolify)
 
 ## Arquitetura
 
-Para o diagrama completo e detalhes dos componentes, consulte:
-
-- `docs/Arquitetura.md`
-
-## Setup
-
-1. Copie `.env.example` para `.env` dentro de `League-Data-Scraping-And-Analytics-master/ProStaff-Scraper/` e preencha chaves.
-2. Suba Elasticsearch/Kibana com `docker compose -f League-Data-Scraping-And-Analytics-master/ProStaff-Scraper/docker-compose.yml up -d elasticsearch kibana`.
-3. (Opcional) Crie índices manualmente no Kibana Dev Tools ou deixe o scraper criar via `ensure_index`.
-
-## Uso
-
-Execute o pipeline CBLOL (POC) para ingestão:
-
-```bash
-# Com Docker
-docker compose -f League-Data-Scraping-And-Analytics-master/ProStaff-Scraper/docker-compose.yml run --rm scraper \
-  python pipelines/cblol.py --league CBLOL --limit 50
-
-# Sem Docker
-python League-Data-Scraping-And-Analytics-master/ProStaff-Scraper/pipelines/cblol.py --league CBLOL --limit 20
+```
+┌─────────────────┐
+│  LoL Esports    │
+│  Gateway API    │
+└────────┬────────┘
+         │
+         │ (leagues, schedules, events)
+         ▼
+┌─────────────────┐      ┌──────────────────┐
+│   Riot Match    │─────▶│  ProStaff        │
+│   V5 API        │      │  Scraper (API)   │
+└─────────────────┘      │                  │
+                         │  - FastAPI       │
+                         │  - Scraper Cron  │
+                         └────────┬─────────┘
+                                  │
+                         (index & cache)
+                                  ▼
+                         ┌──────────────────┐
+                         │  Elasticsearch   │
+                         │  (lol_pro_matches)│
+                         └──────────────────┘
+                                  │
+                         (serve via REST)
+                                  ▼
+                         ┌──────────────────┐
+                         │  ProStaff API    │
+                         │  (Rails)         │
+                         └──────────────────┘
+                                  │
+                                  ▼
+                         ┌──────────────────┐
+                         │   PostgreSQL     │
+                         └──────────────────┘
 ```
 
-O pipeline:
-- Descobre eventos/schedules via LoLEsports
-- Compõe `match_id` com base no `gameId` e região (ex.: `BR1_<gameId>`)
-- Busca detalhes e timeline no Match-V5 (região mapeada)
-- Normaliza e indexa em `lol_pro_matches` e `lol_timelines`
+For detailed architecture, see:
+- `docs/Arquitetura.md`
+- `PROSTAFF_SCRAPER_INTEGRATION_ANALYSIS.md`
+
+### Data Flow
+
+1. **Scraper Cron** runs daily (configurable interval)
+2. Fetches league schedules from **LoL Esports API**
+3. Gets match details from **Riot Match-V5 API**
+4. Normalizes and indexes to **Elasticsearch**
+5. **FastAPI** serves data via REST endpoints
+6. **ProStaff Rails API** consumes data and stores in **PostgreSQL**
 
 ## Estrutura
 
-- `providers/esports.py`: chamadas ao LoLEsports Persisted Gateway
-- `providers/riot.py`: chamadas ao Riot Match/Account V5
-- `indexers/elasticsearch_client.py`: cliente e helpers de bulk
-- `indexers/mappings.py`: mappings dos índices
-- `pipelines/cblol.py`: orquestração da ingestão CBLOL
+```
+ProStaff-Scraper/
+├── api/
+│   ├── __init__.py
+│   └── main.py                      # FastAPI application
+├── providers/
+│   ├── esports.py                   # LoL Esports Gateway API client
+│   ├── riot.py                      # Riot Match-V5 API client
+│   └── ddragon.py                   # Data Dragon (champion data)
+├── indexers/
+│   ├── elasticsearch_client.py      # Elasticsearch helpers
+│   └── mappings.py                  # Index mappings
+├── pipelines/
+│   └── cblol.py                     # Scraping pipeline orchestration
+├── docs/
+│   └── Arquitetura.md               # Architecture documentation
+├── docker-compose.yml               # Development compose
+├── docker-compose.production.yml    # Production compose (Coolify)
+├── Dockerfile.production            # Production Docker image
+├── DEPLOYMENT.md                    # Full deployment guide
+├── QUICKSTART.md                    # Quick setup guide
+├── requirements.txt                 # Python dependencies
+├── .env.example                     # Environment variables template
+└── README.md                        # This file
+```
 
 ## Variáveis de Ambiente
 
-Defina em `League-Data-Scraping-And-Analytics-master/ProStaff-Scraper/.env` (veja `.env.example`):
+See `.env.example` for full template. Key variables:
 
-- `RIOT_API_KEY`: chave da Riot para Match-V5
-- `ESPORTS_API_KEY`: chave da LoLEsports Persisted Gateway (se aplicável)
-- `ELASTICSEARCH_URL`: URL do Elasticsearch (ex.: `http://localhost:9200`)
-- `KIBANA_URL`: URL do Kibana (ex.: `http://localhost:5601`)
-- `PLATFORM_REGION_DEFAULT`: região padrão (ex.: `americas`)
-- `PLATFORM_REGION_ALLOWED`: lista permitida (ex.: `americas,europe,asia`)
+### Required
+
+- `RIOT_API_KEY` - Riot Games API key for Match-V5
+- `ESPORTS_API_KEY` - LoL Esports Persisted Gateway key
+
+### Optional (with defaults)
+
+- `ELASTICSEARCH_URL` - Elasticsearch URL (default: `http://elasticsearch:9200`)
+- `DEFAULT_PLATFORM_REGION` - Default region (default: `BR1`)
+- `API_PORT` - FastAPI server port (default: `8000`)
+
+### Cron Job Settings
+
+- `SYNC_INTERVAL` - Sync frequency in seconds (default: `86400` = 24h)
+- `SYNC_LEAGUE` - League to sync (default: `CBLOL`)
+- `SYNC_LIMIT` - Matches per sync (default: `100`)
+
+### Production Only
+
+See `.env.production.example` for Coolify-specific settings.
 
 ## Troubleshooting
 
-- Falha ao conectar no Elasticsearch: verifique `ELASTICSEARCH_URL` e se o serviço está up.
-- Rate limit na Riot API: o scraper usa backoff exponencial; tente reduzir `--limit`.
-- Índices inexistentes: o scraper tenta criar via `ensure_index`; ou crie no Kibana Dev Tools.
+### Common Issues
 
-## Atualização de Campeões
+**503 Service Unavailable**
+- Wait ~30 seconds for Elasticsearch to fully initialize
+- Check health: `curl http://localhost:8000/health`
 
-- O scraper usa `championName` do Match-V5, então novos campeões são ingeridos automaticamente.
-- Para scripts auxiliares que dependem de mapeamento `championId -> name`, há suporte a atualização automática via Data Dragon:
-  - Arquivo: `providers/ddragon.py`
-  - Na primeira execução, gera/atualiza `champions.json` com a versão mais recente.
-  - Você pode chamar `load_champion_map(Path(__file__).resolve().parent)` para obter o mapeamento.
+**No matches returned from `/api/v1/matches`**
+- Elasticsearch is empty, trigger a sync first:
+  ```bash
+  curl -X POST "http://localhost:8000/api/v1/sync?league=CBLOL&limit=10"
+  ```
 
-## Licença
+**401/403 Unauthorized from Riot API**
+- Verify `RIOT_API_KEY` is correct and not expired
+- Development keys expire every 24 hours
+- Get a new key from https://developer.riotgames.com/
 
-CC BY-NC-SA 4.0
+**Rate Limit Errors**
+- Scraper uses exponential backoff with `tenacity`
+- Reduce `--limit` or `SYNC_LIMIT` to sync fewer matches
+
+**Elasticsearch Connection Failed**
+- Check `ELASTICSEARCH_URL` is correct
+- Ensure Elasticsearch container is running: `docker ps`
+- Check Elasticsearch logs: `docker logs prostaff-scraper-elasticsearch-1`
+
+**ProStaff API cannot reach scraper**
+- Ensure using external URL (`https://scraper.prostaff.gg`)
+- Check DNS resolution: `nslookup scraper.prostaff.gg`
+- Verify Traefik labels in `docker-compose.production.yml`
+
+For more troubleshooting, see `DEPLOYMENT.md`.
+
+---
+
+## Integration with ProStaff API
+
+Once the scraper is deployed, integrate it with your Rails API:
+
+1. **Add environment variable** in ProStaff API:
+   ```bash
+   SCRAPER_API_URL=https://scraper.prostaff.gg
+   ```
+
+2. **Implement client service** (see `PROSTAFF_SCRAPER_INTEGRATION_ANALYSIS.md` for full code)
+
+3. **Import matches** to PostgreSQL via background jobs
+
+See full integration guide in `PROSTAFF_SCRAPER_INTEGRATION_ANALYSIS.md`.
+
+---
+
+## Resources
+
+- **📖 Full Deployment Guide**: [`DEPLOYMENT.md`](./DEPLOYMENT.md)
+- **⚡ Quick Start**: [`QUICKSTART.md`](./QUICKSTART.md)
+- **🏗️ Integration Analysis**: [`PROSTAFF_SCRAPER_INTEGRATION_ANALYSIS.md`](../PROSTAFF_SCRAPER_INTEGRATION_ANALYSIS.md)
+- **🔧 Architecture**: [`docs/Arquitetura.md`](./docs/Arquitetura.md)
+
+---
+
+## License
+
+CC BY-NC-SA 4.0 - Creative Commons Attribution-NonCommercial-ShareAlike 4.0 International
+
+---
+
+## Support
+
+- **Issues**: Open an issue in the repository
+- **Questions**: Check the documentation files listed above
+- **API Docs**: Visit `/docs` endpoint for interactive Swagger UI

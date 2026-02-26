@@ -1,0 +1,127 @@
+services:
+  # Elasticsearch must be deployed as a separate Coolify Service
+  # (use "Elasticsearch" in the Coolify services menu)
+  # After deploying it, copy its internal Docker network URL and set
+  # ELASTICSEARCH_URL in the environment variables below.
+
+  # Scraper API - serves match data to prostaff-api
+  scraper-api:
+    build:
+      context: .
+      dockerfile: Dockerfile.production
+    restart: unless-stopped
+    networks:
+      - coolify
+    expose:
+      - "8000"
+    environment:
+      - RIOT_API_KEY=${RIOT_API_KEY}
+      - ESPORTS_API_KEY=${ESPORTS_API_KEY}
+      - ELASTICSEARCH_URL=${ELASTICSEARCH_URL}
+      - SCRAPER_API_KEY=${SCRAPER_API_KEY}
+      - CORS_ALLOWED_ORIGINS=${CORS_ALLOWED_ORIGINS:-https://api.prostaff.gg,https://prostaff.gg,https://www.prostaff.gg}
+      - DEFAULT_PLATFORM_REGION=${DEFAULT_PLATFORM_REGION:-BR1}
+      - API_PORT=8000
+      - PYTHONUNBUFFERED=1
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:8000/health || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+    labels:
+      # Coolify Meta
+      - coolify.managed=true
+      - coolify.applicationId=2
+      - coolify.type=application
+
+      # Traefik - HTTPS router
+      - traefik.enable=true
+      - traefik.http.routers.prostaff-scraper.rule=Host(`scraper.prostaff.gg`)
+      - traefik.http.routers.prostaff-scraper.entrypoints=https
+      - traefik.http.routers.prostaff-scraper.tls=true
+      - traefik.http.routers.prostaff-scraper.tls.certresolver=letsencrypt
+      - traefik.http.routers.prostaff-scraper.middlewares=scraper-cors
+
+      # Service
+      - traefik.http.services.prostaff-scraper.loadbalancer.server.port=8000
+      - traefik.http.services.prostaff-scraper.loadbalancer.server.scheme=http
+
+      # HTTP to HTTPS redirect
+      - traefik.http.routers.prostaff-scraper-http.rule=Host(`scraper.prostaff.gg`)
+      - traefik.http.routers.prostaff-scraper-http.entrypoints=http
+      - traefik.http.routers.prostaff-scraper-http.middlewares=scraper-redirect-https
+      - traefik.http.middlewares.scraper-redirect-https.redirectscheme.scheme=https
+      - traefik.http.middlewares.scraper-redirect-https.redirectscheme.permanent=true
+
+      # CORS middleware
+      - traefik.http.middlewares.scraper-cors.headers.accesscontrolallowmethods=GET,POST,OPTIONS
+      - traefik.http.middlewares.scraper-cors.headers.accesscontrolalloworiginlist=https://api.prostaff.gg,https://prostaff.gg,https://www.prostaff.gg
+      - traefik.http.middlewares.scraper-cors.headers.accesscontrolallowcredentials=true
+      - traefik.http.middlewares.scraper-cors.headers.accesscontrolallowheaders=Content-Type,Authorization,X-API-Key
+      - traefik.http.middlewares.scraper-cors.headers.accesscontrolmaxage=86400
+
+      # Network
+      - traefik.docker.network=coolify
+
+  # Enrichment daemon - enriches games with items/runes/KDA
+  # Queries Leaguepedia (1 req/9s) then Riot Match-V5 for each unenriched game.
+  # Batch of 50 games = ~7.5min. Checks every 30min for new games to enrich.
+  enrichment-daemon:
+    build:
+      context: .
+      dockerfile: Dockerfile.production
+    restart: unless-stopped
+    networks:
+      - coolify
+    environment:
+      - RIOT_API_KEY=${RIOT_API_KEY}
+      - ELASTICSEARCH_URL=${ELASTICSEARCH_URL}
+      - DEFAULT_PLATFORM_REGION=${DEFAULT_PLATFORM_REGION:-BR1}
+      - PYTHONUNBUFFERED=1
+    command: >
+      sh -c "python etl/enrichment_pipeline.py
+        --daemon
+        --production
+        --interval 30
+        --batch 50"
+    labels:
+      - coolify.managed=true
+      - coolify.applicationId=2
+      - coolify.type=application
+
+  # Scraper Cron - periodic sync using the production ETL pipeline daemon
+  scraper-cron:
+    build:
+      context: .
+      dockerfile: Dockerfile.production
+    restart: unless-stopped
+    networks:
+      - coolify
+    environment:
+      - RIOT_API_KEY=${RIOT_API_KEY}
+      - ESPORTS_API_KEY=${ESPORTS_API_KEY}
+      - ELASTICSEARCH_URL=${ELASTICSEARCH_URL}
+      - DEFAULT_PLATFORM_REGION=${DEFAULT_PLATFORM_REGION:-BR1}
+      - PYTHONUNBUFFERED=1
+      # Leagues to sync (space-separated). Example: "CBLOL LCS LEC LCK"
+      - SYNC_LEAGUES=${SYNC_LEAGUES:-CBLOL}
+      # Sync interval in hours
+      - SYNC_INTERVAL_HOURS=${SYNC_INTERVAL_HOURS:-1}
+      # Match limit per league per run
+      - SYNC_LIMIT=${SYNC_LIMIT:-100}
+    command: >
+      sh -c "python etl/competitive_pipeline.py
+        --daemon
+        --production
+        --interval $${SYNC_INTERVAL_HOURS:-1}
+        --leagues $${SYNC_LEAGUES:-CBLOL}
+        --limit $${SYNC_LIMIT:-100}"
+    labels:
+      - coolify.managed=true
+      - coolify.applicationId=2
+      - coolify.type=application
+
+networks:
+  coolify:
+    external: true
