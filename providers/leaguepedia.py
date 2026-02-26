@@ -28,9 +28,9 @@ logger = logging.getLogger(__name__)
 
 BASE_URL = "https://lol.fandom.com/api.php"
 
-# Anonymous rate limit observed in practice: ~1 req / 8s
-# We use 9s to be conservative.
-RATE_LIMIT_SECONDS = 9.0
+# Anonymous rate limit observed in practice: ~1 req / 10-12s.
+# Using 12s to avoid consecutive-request bursts that trigger longer cooldowns.
+RATE_LIMIT_SECONDS = 12.0
 
 _HEADERS = {
     "User-Agent": "ProStaff-Scraper/1.0 (competitive data research; non-commercial)",
@@ -38,7 +38,7 @@ _HEADERS = {
 }
 
 
-@retry(stop=stop_after_attempt(3), wait=wait_fixed(RATE_LIMIT_SECONDS))
+@retry(stop=stop_after_attempt(5), wait=wait_fixed(RATE_LIMIT_SECONDS))
 def _cargo_query(params: Dict) -> Dict:
     """Execute a single Cargo API query with retry on rate limit / transient failures."""
     base_params = {

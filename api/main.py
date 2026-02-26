@@ -14,6 +14,7 @@ from providers.esports import get_leagues
 from indexers.elasticsearch_client import get_client, query_unenriched
 from etl.competitive_pipeline import CompetitivePipeline
 from etl.enrichment_pipeline import EnrichmentPipeline
+from etl.leaguepedia_pipeline import LeaguepediaPipeline
 
 load_dotenv()
 
@@ -308,6 +309,49 @@ def enrichment_status(api_key: str = Security(_require_api_key)):
     except Exception as e:
         logger.error(f"enrichment_status error: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/v1/sync-leaguepedia")
+def trigger_leaguepedia_sync(
+    background_tasks: BackgroundTasks,
+    tournament: str = Query(
+        ...,
+        description='Leaguepedia OverviewPage, e.g. "CBLOL/2026 Season/Cup"',
+    ),
+    api_key: str = Security(_require_api_key),
+):
+    """
+    Import ALL games for a tournament directly from Leaguepedia.
+
+    Use this when the LoL Esports API no longer has historical data
+    (regular season games disappear from getCompletedEvents after ~weeks
+    because it only returns the 300 most recent global events).
+
+    This endpoint queries Leaguepedia ScoreboardGames by OverviewPage to
+    get every game in the tournament, including regular season BO1s.
+    All games are indexed to Elasticsearch with riot_enriched=true since
+    the player data comes from Leaguepedia.
+
+    Runs in background — each game takes ~24s (2 Leaguepedia requests).
+    A 50-game tournament takes ~20 minutes.
+
+    - **tournament**: Leaguepedia OverviewPage (e.g. "CBLOL/2026 Season/Cup")
+    """
+    def _run():
+        pipeline = LeaguepediaPipeline(dry_run=False)
+        pipeline.run(tournament)
+
+    background_tasks.add_task(_run)
+
+    return {
+        "message": "Leaguepedia sync started in background",
+        "tournament": tournament,
+        "status": "running",
+        "note": (
+            f"Each game takes ~{int(12 * 2)}s (2 Leaguepedia requests). "
+            "Check logs/leaguepedia_pipeline.log for progress."
+        ),
+    }
 
 
 @app.get("/api/v1/stats/leagues")
