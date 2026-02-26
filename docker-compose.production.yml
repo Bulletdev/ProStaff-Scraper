@@ -79,12 +79,15 @@ services:
       - ELASTICSEARCH_URL=${ELASTICSEARCH_URL}
       - DEFAULT_PLATFORM_REGION=${DEFAULT_PLATFORM_REGION:-BR1}
       - PYTHONUNBUFFERED=1
-    command: >
-      sh -c "python etl/enrichment_pipeline.py
-        --daemon
-        --production
-        --interval 30
-        --batch 50"
+    command:
+      - "python"
+      - "etl/enrichment_pipeline.py"
+      - "--daemon"
+      - "--production"
+      - "--interval"
+      - "30"
+      - "--batch"
+      - "50"
     labels:
       - coolify.managed=true
       - coolify.applicationId=2
@@ -110,13 +113,17 @@ services:
       - SYNC_INTERVAL_HOURS=${SYNC_INTERVAL_HOURS:-1}
       # Match limit per league per run
       - SYNC_LIMIT=${SYNC_LIMIT:-100}
-    command: >
-      sh -c "python etl/competitive_pipeline.py
-        --daemon
-        --production
-        --interval $${SYNC_INTERVAL_HOURS:-1}
-        --leagues $${SYNC_LEAGUES:-CBLOL}
-        --limit $${SYNC_LIMIT:-100}"
+    command:
+      - "python"
+      - "etl/competitive_pipeline.py"
+      - "--daemon"
+      - "--production"
+      - "--interval"
+      - "${SYNC_INTERVAL_HOURS:-1}"
+      - "--leagues"
+      - "${SYNC_LEAGUES:-CBLOL}"
+      - "--limit"
+      - "${SYNC_LIMIT:-100}"
     labels:
       - coolify.managed=true
       - coolify.applicationId=2

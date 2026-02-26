@@ -1,15 +1,33 @@
 import os
 from typing import Iterable, Dict, List
+from urllib.parse import urlparse
 from elasticsearch import Elasticsearch, helpers
 
 
 def get_es_url() -> str:
-    url = os.getenv("ELASTICSEARCH_URL", "http://localhost:9200")
-    return url
+    return os.getenv("ELASTICSEARCH_URL", "http://localhost:9200")
 
 
 def get_client() -> Elasticsearch:
-    return Elasticsearch(get_es_url())
+    """Build an Elasticsearch client from ELASTICSEARCH_URL.
+
+    Supports optional credentials embedded in the URL:
+      http://user:pass@host:9200
+    The username/password are extracted and passed via basic_auth so that
+    all elasticsearch-py versions handle authentication correctly.
+    """
+    url = get_es_url()
+    parsed = urlparse(url)
+
+    if parsed.username and parsed.password:
+        clean_url = f"{parsed.scheme}://{parsed.hostname}:{parsed.port}"
+        return Elasticsearch(
+            clean_url,
+            basic_auth=(parsed.username, parsed.password),
+            verify_certs=False,
+        )
+
+    return Elasticsearch(url)
 
 
 def ensure_index(name: str, mapping: Dict) -> None:

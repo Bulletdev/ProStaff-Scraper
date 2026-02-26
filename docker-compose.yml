@@ -66,5 +66,31 @@ services:
     command: ["python", "etl/enrichment_pipeline.py", "--daemon", "--interval", "30", "--batch", "50"]
     restart: unless-stopped
 
+  # Competitive cron - polls LoL Esports API and indexes new games to Elasticsearch.
+  # Runs every SYNC_INTERVAL_HOURS hours (default 1h).
+  scraper-cron:
+    build:
+      context: .
+      dockerfile: Dockerfile.production
+    env_file:
+      - .env
+    volumes:
+      - .:/app
+    depends_on:
+      elasticsearch:
+        condition: service_healthy
+    command:
+      - "python"
+      - "etl/competitive_pipeline.py"
+      - "--daemon"
+      - "--production"
+      - "--interval"
+      - "${SYNC_INTERVAL_HOURS:-1}"
+      - "--leagues"
+      - "${SYNC_LEAGUES:-CBLOL}"
+      - "--limit"
+      - "${SYNC_LIMIT:-100}"
+    restart: unless-stopped
+
 volumes:
   es_data:
