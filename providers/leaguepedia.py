@@ -322,3 +322,78 @@ def _parse_gamelength(gamelength: str) -> int:
     except (ValueError, IndexError):
         pass
     return 0
+
+
+def get_league_tournaments(league_prefix: str, min_year: int = 2013) -> List[Dict]:
+    """Fetch all tournament OverviewPages for a league from Leaguepedia.
+
+    Queries the Tournaments cargo table filtering by OverviewPage prefix
+    (e.g. "CBLOL/") to discover every edition ever recorded.
+
+    Args:
+        league_prefix: OverviewPage prefix, e.g. "CBLOL" (without trailing slash).
+        min_year:      Ignore tournaments before this year (default 2013, CBLOL S1).
+
+    Returns:
+        List of dicts sorted by DateStart ascending:
+          {
+            "overview_page": str,   # e.g. "CBLOL/2025 Season/Split 1"
+            "name":          str,   # e.g. "CBLOL 2025 Split 1"
+            "date_start":    str,   # "YYYY-MM-DD"
+            "date_end":      str,   # "YYYY-MM-DD"
+            "region":        str,
+            "year":          int,
+          }
+    """
+    escaped_prefix = league_prefix.replace("'", "\\'")
+    all_rows: List[Dict] = []
+    offset = 0
+    page_size = 100
+
+    logger.info(f"Discovering tournaments for league prefix='{league_prefix}' (min_year={min_year})...")
+
+    while True:
+        try:
+            data = _cargo_query({
+                "tables": "Tournaments",
+                "fields": "OverviewPage,Name,DateStart,Date,Region,Year",
+                "where": (
+                    f"OverviewPage LIKE '{escaped_prefix}/%'"
+                    f" AND Year >= {min_year}"
+                ),
+                "limit": str(page_size),
+                "offset": str(offset),
+                "order_by": "DateStart ASC",
+            })
+        except Exception as e:
+            logger.error(f"Tournaments query failed at offset {offset}: {e}")
+            break
+
+        rows = data.get("cargoquery", [])
+        if not rows:
+            break
+
+        for r in rows:
+            t = r.get("title", {})
+            overview_page = t.get("OverviewPage", "").strip()
+            if not overview_page:
+                continue
+            all_rows.append({
+                "overview_page": overview_page,
+                "name": t.get("Name", "").strip(),
+                "date_start": t.get("DateStart", "").strip(),
+                "date_end": t.get("Date", "").strip(),
+                "region": t.get("Region", "").strip(),
+                "year": _safe_int(t.get("Year")),
+            })
+
+        logger.info(f"  Fetched {len(rows)} tournament rows (total so far: {len(all_rows)})")
+
+        if len(rows) < page_size:
+            break
+
+        offset += page_size
+        time.sleep(RATE_LIMIT_SECONDS)
+
+    logger.info(f"Discovered {len(all_rows)} tournaments for '{league_prefix}'")
+    return all_rows

@@ -15,6 +15,7 @@ from indexers.elasticsearch_client import get_client, query_unenriched
 from etl.competitive_pipeline import CompetitivePipeline
 from etl.enrichment_pipeline import EnrichmentPipeline
 from etl.leaguepedia_pipeline import LeaguepediaPipeline
+from etl.historical_backfill import HistoricalBackfillPipeline
 
 load_dotenv()
 
@@ -352,6 +353,119 @@ def trigger_leaguepedia_sync(
             "Check logs/leaguepedia_pipeline.log for progress."
         ),
     }
+
+
+@app.get("/api/v1/tournaments")
+def list_tournaments(
+    league: str = Query(
+        "CBLOL",
+        description="League prefix on Leaguepedia (e.g. CBLOL, LCS, LEC)",
+    ),
+    min_year: int = Query(
+        2013,
+        ge=2012,
+        le=2030,
+        description="Ignore tournaments before this year",
+    ),
+    api_key: str = Security(_require_api_key),
+):
+    """
+    Discover and list all main-event tournament OverviewPages for a league.
+
+    Queries the Leaguepedia Tournaments cargo table directly and applies the
+    same filter used by the historical backfill pipeline (skips qualifiers,
+    academy, all-star and sub-event pages).
+
+    Useful to preview which editions exist before triggering the full backfill.
+    Note: this makes live Leaguepedia API calls — may take a few seconds.
+    """
+    from providers.leaguepedia import get_league_tournaments
+    from etl.historical_backfill import _is_main_event
+
+    try:
+        raw = get_league_tournaments(league, min_year=min_year)
+        filtered = [t for t in raw if _is_main_event(t["overview_page"])]
+
+        return {
+            "league": league,
+            "min_year": min_year,
+            "total_discovered": len(raw),
+            "total_main_events": len(filtered),
+            "tournaments": filtered,
+        }
+    except Exception as e:
+        logger.error(f"list_tournaments error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/v1/historical-backfill")
+def trigger_historical_backfill(
+    background_tasks: BackgroundTasks,
+    league: str = Query(
+        "CBLOL",
+        description="League prefix on Leaguepedia (e.g. CBLOL, LCS, LEC)",
+    ),
+    min_year: int = Query(
+        2013,
+        ge=2012,
+        le=2030,
+        description="Ignore tournaments before this year",
+    ),
+    api_key: str = Security(_require_api_key),
+):
+    """
+    Trigger a full historical backfill for a league.
+
+    Discovers every tournament edition on Leaguepedia (e.g. all CBLOL splits
+    since 2013) and imports all games for each one into Elasticsearch.
+
+    The pipeline is **resumable**: progress is saved to
+    `data/backfill_{LEAGUE}.json` after each tournament. If the server
+    restarts mid-run, re-calling this endpoint will continue from where
+    it left off, skipping already-completed tournaments.
+
+    Each game takes ~24 seconds (2 Leaguepedia requests at 12s each).
+    A full CBLOL history (~30 tournaments × ~60 games) takes roughly 6 hours.
+
+    Check progress with `GET /api/v1/historical-backfill/status?league=CBLOL`.
+    """
+    def _run():
+        pipeline = HistoricalBackfillPipeline(league=league, min_year=min_year)
+        pipeline.run()
+
+    background_tasks.add_task(_run)
+
+    return {
+        "message": f"Historical backfill started for '{league}' (min_year={min_year})",
+        "league": league,
+        "min_year": min_year,
+        "status": "running",
+        "progress_file": f"data/backfill_{league.upper()}.json",
+        "note": (
+            "Runs in background. Each game ~24s (Leaguepedia rate limit). "
+            f"Check GET /api/v1/historical-backfill/status?league={league} for progress."
+        ),
+    }
+
+
+@app.get("/api/v1/historical-backfill/status")
+def historical_backfill_status(
+    league: str = Query("CBLOL", description="League prefix (e.g. CBLOL, LCS)"),
+    api_key: str = Security(_require_api_key),
+):
+    """
+    Return current progress of the historical backfill for a league.
+
+    Reads from `data/backfill_{LEAGUE}.json` (written after each tournament).
+
+    Response includes:
+    - `total_tournaments`: how many main-event editions were discovered
+    - `completed` / `pending` / `errors`: counts by status
+    - `total_games_indexed`: cumulative games loaded into Elasticsearch
+    - `tournaments`: per-tournament breakdown with dates, game counts, status
+    """
+    pipeline = HistoricalBackfillPipeline(league=league)
+    return pipeline.get_status()
 
 
 @app.get("/api/v1/stats/leagues")

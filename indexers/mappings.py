@@ -51,6 +51,10 @@ MATCHES_MAPPING = {
             "enrichment_attempts": {"type": "integer"},
             "last_enrichment_attempt": {"type": "date"},
             "enriched_at": {"type": "date"},
+            # Historical metadata (Leaguepedia-sourced games only)
+            "year": {"type": "integer"},                 # e.g. 2023
+            "split_event": {"type": "keyword"},          # e.g. "Split 1", "Playoffs", "Cup"
+            "tournament_name": {"type": "keyword"},      # e.g. "2023 Season Split 1"
             # Game-level stats (from Leaguepedia ScoreboardGames)
             "leaguepedia_page": {"type": "keyword"},     # Leaguepedia internal page name
             "patch": {"type": "keyword"},

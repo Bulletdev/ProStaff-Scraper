@@ -92,5 +92,36 @@ services:
       - "${SYNC_LIMIT:-100}"
     restart: unless-stopped
 
+  # Historical backfill — runs once and exits when all tournaments are done.
+  # Restarts automatically on crash (resumable via data/backfill_CBLOL.json).
+  # To start:  docker compose up backfill -d
+  # To watch:  docker compose logs backfill -f
+  # To status: docker compose exec api python etl/historical_backfill.py --league CBLOL --status
+  backfill:
+    build:
+      context: .
+      dockerfile: Dockerfile.production
+    container_name: prostaff-scraper-backfill
+    env_file:
+      - .env
+    volumes:
+      - .:/app
+    depends_on:
+      elasticsearch:
+        condition: service_healthy
+    command:
+      - "python"
+      - "etl/historical_backfill.py"
+      - "--league"
+      - "${BACKFILL_LEAGUE:-CBLOL}"
+      - "--min-year"
+      - "${BACKFILL_MIN_YEAR:-2013}"
+    restart: on-failure
+    # Disable the Dockerfile healthcheck (no HTTP server in this service)
+    healthcheck:
+      disable: true
+    profiles:
+      - backfill
+
 volumes:
   es_data:

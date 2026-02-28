@@ -158,6 +158,46 @@ def _parse_gamelength_seconds(gamelength: str) -> int:
     return 0
 
 
+def _parse_overview_page(overview_page: str) -> Dict:
+    """Extract structured fields from a Leaguepedia OverviewPage path.
+
+    Format: "LEAGUE/YYYY Season/EVENT"
+    Examples:
+      "CBLOL/2023 Season/Split 1"   -> year=2023, split_event="Split 1",
+                                        tournament_name="2023 Season Split 1"
+      "CBLOL/2026 Season/Cup"       -> year=2026, split_event="Cup",
+                                        tournament_name="2026 Season Cup"
+    """
+    parts = overview_page.split("/")
+    if len(parts) >= 3:
+        season_part = parts[1]   # e.g. "2023 Season"
+        split_event = parts[2]   # e.g. "Split 1", "Playoffs", "Cup"
+        # Extract the numeric year from the season part
+        try:
+            year = int(season_part.split()[0])
+        except (ValueError, IndexError):
+            year = 0
+        tournament_name = f"{season_part} {split_event}"
+    elif len(parts) == 2:
+        season_part = parts[1]
+        split_event = parts[1]
+        try:
+            year = int(season_part.split()[0])
+        except (ValueError, IndexError):
+            year = 0
+        tournament_name = season_part
+    else:
+        year = 0
+        split_event = ""
+        tournament_name = overview_page
+
+    return {
+        "year": year,
+        "split_event": split_event,
+        "tournament_name": tournament_name,
+    }
+
+
 def build_es_document(row: Dict, players: List[Dict]) -> Dict:
     """Build an Elasticsearch document from Leaguepedia data.
 
@@ -180,6 +220,7 @@ def build_es_document(row: Dict, players: List[Dict]) -> Dict:
 
     stage = _parse_stage(game_id_lp, overview_page)
     best_of = _infer_best_of(stage)
+    overview_meta = _parse_overview_page(overview_page)
 
     # Build team structures matching LoL Esports API format
     team1 = {
@@ -225,6 +266,10 @@ def build_es_document(row: Dict, players: List[Dict]) -> Dict:
         "enrichment_attempts": 0,
         "indexed_at": datetime.now(tz=timezone.utc).isoformat(),
         "source": "leaguepedia_pipeline",
+        # Historical metadata — enables filtering by year/split in the API
+        "year": overview_meta["year"],
+        "split_event": overview_meta["split_event"],
+        "tournament_name": overview_meta["tournament_name"],
     }
     return doc
 
