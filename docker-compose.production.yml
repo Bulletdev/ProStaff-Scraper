@@ -12,6 +12,7 @@ services:
     restart: unless-stopped
     networks:
       - coolify
+      - vcgokoow00g0ggs0wwg4so4o
     expose:
       - "8000"
     environment:
@@ -74,6 +75,7 @@ services:
     restart: unless-stopped
     networks:
       - coolify
+      - vcgokoow00g0ggs0wwg4so4o
     environment:
       - RIOT_API_KEY=${RIOT_API_KEY}
       - ELASTICSEARCH_URL=${ELASTICSEARCH_URL}
@@ -101,6 +103,7 @@ services:
     restart: unless-stopped
     networks:
       - coolify
+      - vcgokoow00g0ggs0wwg4so4o
     environment:
       - RIOT_API_KEY=${RIOT_API_KEY}
       - ESPORTS_API_KEY=${ESPORTS_API_KEY}
@@ -131,4 +134,6 @@ services:
 
 networks:
   coolify:
+    external: true
+  vcgokoow00g0ggs0wwg4so4o:
     external: true
