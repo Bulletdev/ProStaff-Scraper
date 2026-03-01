@@ -38,7 +38,12 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from dotenv import load_dotenv
 load_dotenv()
 
-from providers.leaguepedia import get_league_tournaments, RATE_LIMIT_SECONDS
+from providers.leaguepedia import (
+    get_league_tournaments,
+    RATE_LIMIT_SECONDS,
+    BACKFILL_COOLDOWN_SECONDS,
+    LeaguepediaRateLimitError,
+)
 from etl.leaguepedia_pipeline import LeaguepediaPipeline
 
 os.makedirs("logs", exist_ok=True)
@@ -53,6 +58,20 @@ logging.basicConfig(
     ],
 )
 logger = logging.getLogger(__name__)
+
+# ---------------------------------------------------------------------------
+# League aliases
+# ---------------------------------------------------------------------------
+
+# Some leagues were rebranded across years.  When discovering tournaments for
+# a league (e.g. "CBLOL"), we also search under its historical aliases so that
+# the full competitive history is imported under a single league label.
+#
+# Format: { canonical_name: [alias1, alias2, ...] }
+LEAGUE_ALIASES: Dict[str, List[str]] = {
+    "CBLOL": ["LTA Sul", "LTA South"],
+    "LCS": ["LTA North", "LTA Norte"],
+}
 
 # ---------------------------------------------------------------------------
 # Tournament filters
@@ -99,10 +118,15 @@ TOURNAMENT_STATUS_IN_PROGRESS = "in_progress"
 TOURNAMENT_STATUS_COMPLETED = "completed"
 TOURNAMENT_STATUS_SKIPPED = "skipped"
 TOURNAMENT_STATUS_ERROR = "error"
+TOURNAMENT_STATUS_RATE_LIMITED = "rate_limited"
 
 # Max retries for a tournament that returns 0 games (avoids infinite loop
 # for future/genuinely-empty tournaments that have nothing in Leaguepedia yet)
-MAX_FETCH_RETRIES = 3
+MAX_FETCH_RETRIES = 5
+
+# Cooldown in seconds after hitting a rate limit error.
+# Leaguepedia rate limit cooldown can last 2-5 minutes once accumulated.
+RATE_LIMIT_COOLDOWN_SECONDS = 180
 
 
 def _progress_path(league: str) -> str:
@@ -154,15 +178,62 @@ class HistoricalBackfillPipeline:
 
     def discover_tournaments(self) -> List[Dict]:
         """
-        Query Leaguepedia for all tournament OverviewPages for this league,
-        filter to main competitive events, and return sorted by date.
+        Query Leaguepedia for all tournament OverviewPages for this league
+        (and any historical aliases), filter to main competitive events,
+        and return sorted by date.
+
+        For example, when league="CBLOL", this also discovers tournaments
+        under "LTA Sul" (the 2025 rebrand) so that the full competitive
+        history is captured in a single backfill run.
         """
-        raw = get_league_tournaments(self.league, min_year=self.min_year)
+        # Primary league prefix
+        prefixes = [self.league]
+
+        # Add any known aliases (e.g. CBLOL -> LTA Sul for 2025)
+        aliases = LEAGUE_ALIASES.get(self.league, [])
+        prefixes.extend(aliases)
+
+        raw: List[Dict] = []
+        for prefix in prefixes:
+            logger.info(f"Discovering tournaments under prefix '{prefix}'...")
+            try:
+                found = get_league_tournaments(prefix, min_year=self.min_year)
+                # Tag each tournament with the canonical league name so the
+                # documents indexed to ES use a consistent league label.
+                for t in found:
+                    t["canonical_league"] = self.league
+                raw.extend(found)
+            except LeaguepediaRateLimitError:
+                logger.warning(
+                    f"Rate limited discovering tournaments for '{prefix}'. "
+                    f"Sleeping {RATE_LIMIT_COOLDOWN_SECONDS}s and continuing."
+                )
+                time.sleep(RATE_LIMIT_COOLDOWN_SECONDS)
+                # Retry once after cooldown
+                try:
+                    found = get_league_tournaments(prefix, min_year=self.min_year)
+                    for t in found:
+                        t["canonical_league"] = self.league
+                    raw.extend(found)
+                except Exception as e2:
+                    logger.error(f"Failed to discover tournaments for '{prefix}' after retry: {e2}")
+
+        # Deduplicate by overview_page (in case aliases overlap)
+        seen = set()
+        deduped = []
+        for t in raw:
+            if t["overview_page"] not in seen:
+                seen.add(t["overview_page"])
+                deduped.append(t)
+        raw = deduped
 
         filtered = [t for t in raw if _is_main_event(t["overview_page"])]
 
+        # Sort by date_start to process chronologically
+        filtered.sort(key=lambda t: t.get("date_start", ""))
+
         logger.info(
-            f"Discovered {len(raw)} total pages, "
+            f"Discovered {len(raw)} total pages across {len(prefixes)} prefix(es), "
             f"{len(filtered)} main events after filtering"
         )
         return filtered
@@ -188,6 +259,7 @@ class HistoricalBackfillPipeline:
             TOURNAMENT_STATUS_IN_PROGRESS: 0,
             TOURNAMENT_STATUS_ERROR: 0,
             TOURNAMENT_STATUS_SKIPPED: 0,
+            TOURNAMENT_STATUS_RATE_LIMITED: 0,
         }
         for t in tournaments:
             s = t.get("status", TOURNAMENT_STATUS_PENDING)
@@ -202,17 +274,19 @@ class HistoricalBackfillPipeline:
             "pending": counts[TOURNAMENT_STATUS_PENDING],
             "in_progress": counts[TOURNAMENT_STATUS_IN_PROGRESS],
             "errors": counts[TOURNAMENT_STATUS_ERROR],
+            "rate_limited": counts[TOURNAMENT_STATUS_RATE_LIMITED],
             "skipped": counts[TOURNAMENT_STATUS_SKIPPED],
             "total_games_indexed": sum(
                 t.get("games_indexed", 0) for t in tournaments
             ),
-            # Show how many are still actionable (pending + in_progress + retryable errors)
+            # Show how many are still actionable (pending + in_progress + retryable errors + rate_limited)
             "remaining": sum(
                 1 for t in tournaments
                 if t["status"] in (
                     TOURNAMENT_STATUS_PENDING,
                     TOURNAMENT_STATUS_IN_PROGRESS,
                     TOURNAMENT_STATUS_ERROR,
+                    TOURNAMENT_STATUS_RATE_LIMITED,
                 ) and t.get("fetch_retries", 0) < MAX_FETCH_RETRIES
             ),
             "tournaments": tournaments,
@@ -257,6 +331,9 @@ class HistoricalBackfillPipeline:
                         "date_start": t["date_start"],
                         "date_end": t["date_end"],
                         "year": t["year"],
+                        # canonical_league ensures aliased tournaments (e.g. LTA Sul)
+                        # are indexed under the primary league label (e.g. CBLOL).
+                        "canonical_league": t.get("canonical_league", self.league),
                         "status": TOURNAMENT_STATUS_PENDING,
                         "games_indexed": 0,
                         "games_skipped": 0,
@@ -276,7 +353,8 @@ class HistoricalBackfillPipeline:
             if t["status"] in (
                 TOURNAMENT_STATUS_PENDING,
                 TOURNAMENT_STATUS_IN_PROGRESS,
-                TOURNAMENT_STATUS_ERROR,  # Retry errored tournaments (e.g. rate-limit failures)
+                TOURNAMENT_STATUS_ERROR,         # Retry errored tournaments
+                TOURNAMENT_STATUS_RATE_LIMITED,   # Retry rate-limited tournaments
             )
         ]
 
@@ -294,6 +372,7 @@ class HistoricalBackfillPipeline:
                 TOURNAMENT_STATUS_PENDING,
                 TOURNAMENT_STATUS_IN_PROGRESS,
                 TOURNAMENT_STATUS_ERROR,
+                TOURNAMENT_STATUS_RATE_LIMITED,
             ):
                 continue
 
@@ -326,20 +405,26 @@ class HistoricalBackfillPipeline:
                 continue
 
             try:
-                pipeline = LeaguepediaPipeline(dry_run=False)
+                # Pass canonical_league so aliased tournaments (e.g. LTA Sul)
+                # are indexed with the primary league label (e.g. CBLOL).
+                canonical = entry.get("canonical_league", self.league)
+                pipeline = LeaguepediaPipeline(
+                    dry_run=False,
+                    league_override=canonical,
+                )
                 pipeline.run(overview_page)
 
                 fetched = pipeline.stats.get("fetched", 0)
 
                 if fetched == 0:
-                    # Either a rate-limit failure or a genuinely empty tournament.
-                    # Mark as ERROR so the next run will retry, up to MAX_FETCH_RETRIES.
+                    # Genuinely empty tournament (rate limit would have raised
+                    # LeaguepediaRateLimitError before reaching this point).
                     entry["status"] = TOURNAMENT_STATUS_ERROR
                     entry["fetch_retries"] = entry.get("fetch_retries", 0) + 1
                     entry["error_message"] = (
                         f"Zero games fetched from Leaguepedia "
                         f"(attempt {entry['fetch_retries']}/{MAX_FETCH_RETRIES}). "
-                        "Possible rate-limit or tournament not yet in Leaguepedia."
+                        "Tournament may not exist in Leaguepedia yet."
                     )
                     entry["completed_at"] = datetime.now(tz=timezone.utc).isoformat()
                     logger.warning(
@@ -358,6 +443,25 @@ class HistoricalBackfillPipeline:
                         f"{entry['errors']} errors"
                     )
 
+            except LeaguepediaRateLimitError as e:
+                # Rate limited — mark distinctly so we retry after a long cooldown.
+                # This does NOT count toward fetch_retries (it's not a "real" attempt).
+                logger.warning(
+                    f"  Rate limited on '{overview_page}': {e}. "
+                    f"Cooling down {RATE_LIMIT_COOLDOWN_SECONDS}s before continuing."
+                )
+                entry["status"] = TOURNAMENT_STATUS_RATE_LIMITED
+                entry["error_message"] = f"Rate limited: {e}"
+                entry["completed_at"] = datetime.now(tz=timezone.utc).isoformat()
+                _save_progress(self.league, state)
+
+                # Long cooldown to let the rate limit fully reset
+                logger.info(
+                    f"  Rate limit cooldown: sleeping {RATE_LIMIT_COOLDOWN_SECONDS}s..."
+                )
+                time.sleep(RATE_LIMIT_COOLDOWN_SECONDS)
+                continue
+
             except Exception as e:
                 logger.error(f"  Tournament failed: {e}", exc_info=True)
                 entry["status"] = TOURNAMENT_STATUS_ERROR
@@ -367,14 +471,19 @@ class HistoricalBackfillPipeline:
 
             _save_progress(self.league, state)
 
-            # Brief pause between tournaments (Leaguepedia rate limit courtesy)
+            # Pause between tournaments to avoid rate limit accumulation.
+            # Use the longer BACKFILL_COOLDOWN_SECONDS instead of RATE_LIMIT_SECONDS
+            # to give Leaguepedia's rate limit bucket time to refill.
             remaining = [
                 t for t in state["tournaments"]
-                if t["status"] == TOURNAMENT_STATUS_PENDING
+                if t["status"] in (
+                    TOURNAMENT_STATUS_PENDING,
+                    TOURNAMENT_STATUS_RATE_LIMITED,
+                )
             ]
             if remaining:
-                logger.info(f"  Cooling down {RATE_LIMIT_SECONDS}s before next tournament...")
-                time.sleep(RATE_LIMIT_SECONDS)
+                logger.info(f"  Cooling down {BACKFILL_COOLDOWN_SECONDS}s before next tournament...")
+                time.sleep(BACKFILL_COOLDOWN_SECONDS)
 
         final = self.get_status()
         logger.info("=" * 70)

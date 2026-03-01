@@ -132,6 +132,46 @@ services:
       - coolify.applicationId=2
       - coolify.type=application
 
+  # Historical Backfill — imports ALL games for every CBLOL/LTA Sul edition
+  # from Leaguepedia into Elasticsearch.  Fully resumable via progress file.
+  #
+  # Runs once per deploy, processes pending/failed tournaments, then exits.
+  # On crash or rate-limit, restarts automatically and resumes from last checkpoint.
+  #
+  # After the backfill populates ES, the Rails API's scheduled
+  # HistoricalBackfillJob pulls the data into the Rails DB.
+  #
+  # Estimated time for a full CBLOL history (~50 tournaments): 8-12 hours.
+  # Subsequent runs only process new/failed tournaments: minutes.
+  backfill:
+    build:
+      context: .
+      dockerfile: Dockerfile.production
+    restart: on-failure
+    networks:
+      - coolify
+      - vcgokoow00g0ggs0wwg4so4o
+    environment:
+      - ELASTICSEARCH_URL=${ELASTICSEARCH_URL}
+      - PYTHONUNBUFFERED=1
+      # Leagues to backfill (space-separated). Aliases (LTA Sul) are resolved automatically.
+      - BACKFILL_LEAGUE=${BACKFILL_LEAGUE:-CBLOL}
+      - BACKFILL_MIN_YEAR=${BACKFILL_MIN_YEAR:-2013}
+    command:
+      - "python"
+      - "etl/historical_backfill.py"
+      - "--league"
+      - "${BACKFILL_LEAGUE:-CBLOL}"
+      - "--min-year"
+      - "${BACKFILL_MIN_YEAR:-2013}"
+    # Disable the Dockerfile healthcheck (no HTTP server in this service)
+    healthcheck:
+      disable: true
+    labels:
+      - coolify.managed=true
+      - coolify.applicationId=2
+      - coolify.type=application
+
 networks:
   coolify:
     external: true

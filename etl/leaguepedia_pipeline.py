@@ -35,6 +35,8 @@ load_dotenv()
 from providers.leaguepedia import (
     get_game_players,
     RATE_LIMIT_SECONDS,
+    BACKFILL_COOLDOWN_SECONDS,
+    LeaguepediaRateLimitError,
     _cargo_query,
 )
 from indexers.elasticsearch_client import ensure_index, get_client
@@ -67,6 +69,11 @@ def fetch_tournament_games(overview_page: str) -> List[Dict]:
 
     Returns:
         List of row dicts from the Cargo API, sorted by DateTime_UTC ascending.
+
+    Raises:
+        LeaguepediaRateLimitError: if rate limited after all retries.
+            Callers (e.g. historical_backfill) should catch this and schedule
+            a longer cooldown before retrying the tournament.
     """
     escaped = overview_page.replace("'", "\\'")
     logger.info(f"Querying ScoreboardGames for OverviewPage='{overview_page}'...")
@@ -89,6 +96,12 @@ def fetch_tournament_games(overview_page: str) -> List[Dict]:
                 "offset": str(offset),
                 "order_by": "DateTime_UTC ASC",
             })
+        except LeaguepediaRateLimitError:
+            logger.error(
+                f"Rate limited while fetching games for '{overview_page}' "
+                f"(offset={offset}). Propagating to caller for longer cooldown."
+            )
+            raise
         except Exception as e:
             logger.error(f"ScoreboardGames query failed at offset {offset}: {e}")
             break
@@ -198,11 +211,20 @@ def _parse_overview_page(overview_page: str) -> Dict:
     }
 
 
-def build_es_document(row: Dict, players: List[Dict]) -> Dict:
+def build_es_document(row: Dict, players: List[Dict], league_override: Optional[str] = None) -> Dict:
     """Build an Elasticsearch document from Leaguepedia data.
 
     The document format mirrors CompetitiveGame.to_dict() so that the
     existing ScraperImporterService in the Rails API can process it.
+
+    Args:
+        row:              ScoreboardGames row dict from Leaguepedia.
+        players:          List of player dicts from ScoreboardPlayers.
+        league_override:  When provided, overrides the league field instead of
+                          extracting it from the OverviewPage prefix.  Used by
+                          the historical backfill to normalize league aliases
+                          (e.g. "LTA Sul" -> "CBLOL") so all documents for a
+                          rebranded league use a consistent label.
     """
     game_id_lp = row.get("GameId", "")
     overview_page = row.get("OverviewPage", "")
@@ -221,6 +243,11 @@ def build_es_document(row: Dict, players: List[Dict]) -> Dict:
     stage = _parse_stage(game_id_lp, overview_page)
     best_of = _infer_best_of(stage)
     overview_meta = _parse_overview_page(overview_page)
+
+    # Determine league label: prefer explicit override, fall back to OverviewPage prefix
+    league_label = league_override or (
+        overview_page.split("/")[0] if "/" in overview_page else overview_page
+    )
 
     # Build team structures matching LoL Esports API format
     team1 = {
@@ -244,7 +271,7 @@ def build_es_document(row: Dict, players: List[Dict]) -> Dict:
         "match_id": game_id_lp,            # No LoL Esports ID available
         "game_id": None,
         "game_number": game_number,
-        "league": overview_page.split("/")[0] if "/" in overview_page else overview_page,
+        "league": league_label,
         "stage": stage,
         "start_time": datetime_utc.replace(" ", "T") + "Z" if datetime_utc else "",
         "best_of": best_of,
@@ -283,8 +310,9 @@ class LeaguepediaPipeline:
 
     CHECKPOINT_SIZE = 10  # Index to ES every N enriched games (crash-safe)
 
-    def __init__(self, dry_run: bool = False):
+    def __init__(self, dry_run: bool = False, league_override: Optional[str] = None):
         self.dry_run = dry_run
+        self.league_override = league_override
         self.stats = {
             "fetched": 0,
             "enriched": 0,
@@ -299,6 +327,11 @@ class LeaguepediaPipeline:
 
         Args:
             tournament_overview_page: e.g. "CBLOL/2026 Season/Cup"
+
+        Raises:
+            LeaguepediaRateLimitError: if rate limited during game list fetch.
+                The caller (historical_backfill) should catch this and apply
+                a longer cooldown before retrying.
         """
         logger.info("=" * 70)
         logger.info(f"Leaguepedia Pipeline: {tournament_overview_page}")
@@ -306,6 +339,9 @@ class LeaguepediaPipeline:
         logger.info("=" * 70)
 
         # Step 1: Get all game records from ScoreboardGames
+        # LeaguepediaRateLimitError is intentionally NOT caught here —
+        # it propagates to the caller so the backfill can apply a longer
+        # cooldown and retry the entire tournament later.
         game_rows = fetch_tournament_games(tournament_overview_page)
         if not game_rows:
             logger.warning(f"No games found for '{tournament_overview_page}'")
@@ -352,6 +388,18 @@ class LeaguepediaPipeline:
             time.sleep(RATE_LIMIT_SECONDS)
             try:
                 players = get_game_players(game_id_lp)
+            except LeaguepediaRateLimitError:
+                # Rate limited during player fetch — propagate so backfill
+                # can cooldown and retry.  Already-indexed docs from this
+                # tournament are safe (checkpoint saves were made).
+                logger.error(
+                    f"  Rate limited fetching players for {game_id_lp}. "
+                    f"Propagating to caller."
+                )
+                # Flush any pending docs before propagating
+                if docs_to_index:
+                    self._bulk_index(es, docs_to_index)
+                raise
             except Exception as e:
                 logger.error(f"  Player fetch failed: {e}")
                 self.stats["errors"] += 1
@@ -362,7 +410,7 @@ class LeaguepediaPipeline:
                 self.stats["skipped_no_players"] += 1
                 continue
 
-            doc = build_es_document(row, players)
+            doc = build_es_document(row, players, league_override=self.league_override)
             docs_to_index.append(doc)
             self.stats["enriched"] += 1
 

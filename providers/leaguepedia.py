@@ -22,7 +22,12 @@ import logging
 from typing import Optional, Dict, List, Any
 
 import httpx
-from tenacity import retry, stop_after_attempt, wait_fixed
+from tenacity import (
+    retry,
+    stop_after_attempt,
+    wait_exponential,
+    retry_if_exception_type,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -32,22 +37,47 @@ BASE_URL = "https://lol.fandom.com/api.php"
 # Using 12s to avoid consecutive-request bursts that trigger longer cooldowns.
 RATE_LIMIT_SECONDS = 12.0
 
+# Longer cooldown used between tournaments during backfill to avoid
+# accumulating rate-limit debt across many sequential queries.
+BACKFILL_COOLDOWN_SECONDS = 30.0
+
 _HEADERS = {
     "User-Agent": "ProStaff-Scraper/1.0 (competitive data research; non-commercial)",
     "Accept": "application/json",
 }
 
 
-@retry(stop=stop_after_attempt(5), wait=wait_fixed(RATE_LIMIT_SECONDS))
+class LeaguepediaRateLimitError(Exception):
+    """Raised when Leaguepedia returns a rate-limit error.
+
+    This is a distinct exception so callers can differentiate between
+    'no data exists' (empty result set) and 'request was rejected'
+    (rate limited — should retry after a longer cooldown).
+    """
+    pass
+
+
+@retry(
+    stop=stop_after_attempt(7),
+    wait=wait_exponential(multiplier=RATE_LIMIT_SECONDS, min=RATE_LIMIT_SECONDS, max=120),
+    retry=retry_if_exception_type((LeaguepediaRateLimitError, httpx.HTTPStatusError, httpx.ConnectError)),
+)
 def _cargo_query(params: Dict) -> Dict:
-    """Execute a single Cargo API query with retry on rate limit / transient failures."""
+    """Execute a single Cargo API query with retry on rate limit / transient failures.
+
+    Uses exponential backoff: 12s -> 24s -> 48s -> 96s -> 120s (capped).
+    This prevents accumulated rate-limit debt when running bulk imports.
+
+    Raises:
+        LeaguepediaRateLimitError: when all retries are exhausted on rate limit.
+    """
     base_params = {
         "action": "cargoquery",
         "format": "json",
     }
     base_params.update(params)
 
-    with httpx.Client(timeout=15) as client:
+    with httpx.Client(timeout=20) as client:
         r = client.get(BASE_URL, params=base_params, headers=_HEADERS)
         r.raise_for_status()
         data = r.json()
@@ -56,10 +86,9 @@ def _cargo_query(params: Dict) -> Dict:
         code = data["error"].get("code", "")
         info = data["error"].get("info", "")
         if code == "ratelimited":
-            raise httpx.HTTPStatusError(
-                f"Leaguepedia rate limited: {info}",
-                request=None,
-                response=None,
+            logger.warning(f"Leaguepedia rate limited, will retry with backoff: {info}")
+            raise LeaguepediaRateLimitError(
+                f"Leaguepedia rate limited: {info}"
             )
         logger.warning(f"Leaguepedia API error: {code} - {info}")
         return {}
