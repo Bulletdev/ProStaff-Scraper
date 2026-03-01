@@ -69,8 +69,8 @@ logger = logging.getLogger(__name__)
 #
 # Format: { canonical_name: [alias1, alias2, ...] }
 LEAGUE_ALIASES: Dict[str, List[str]] = {
-    "CBLOL": ["LTA Sul", "LTA South"],
-    "LCS": ["LTA North", "LTA Norte"],
+    "CBLOL": ["LTA South"],   # 2025 rebrand — Leaguepedia uses "LTA South" (not "LTA Sul")
+    "LCS": ["LTA North"],     # 2025 rebrand — Leaguepedia uses "LTA North" (not "LTA Norte")
 }
 
 # ---------------------------------------------------------------------------
