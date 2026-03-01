@@ -77,6 +77,15 @@ MATCHES_MAPPING = {
                     "gold": {"type": "integer"},
                     "damage": {"type": "integer"},
                     "win": {"type": "boolean"},
+                    # Extended stats from Leaguepedia (absent in older records → 0)
+                    "damage_taken":  {"type": "integer"},
+                    "vision_score":  {"type": "integer"},
+                    "wards_placed":  {"type": "integer"},
+                    "wards_killed":  {"type": "integer"},
+                    # Derived per-minute fields (computed when game_duration_seconds > 0)
+                    "cs_per_min":     {"type": "float"},
+                    "gold_per_min":   {"type": "float"},
+                    "damage_per_min": {"type": "float"},
                     # Items: list of item name strings (empty slots excluded)
                     "items": {"type": "keyword"},
                     # Summoner spells: list of spell name strings

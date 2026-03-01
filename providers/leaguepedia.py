@@ -108,6 +108,36 @@ def _parse_summoner_spells(raw: str) -> List[str]:
 # Public API
 # ---------------------------------------------------------------------------
 
+def get_scoreboard_schema() -> List[str]:
+    """Return all column names available in the ScoreboardPlayers Cargo table.
+
+    Use this once to verify which optional fields (VisionScore, DamageTaken,
+    WardsPlaced, WardsKilled) are exposed by the current Leaguepedia schema
+    before adding them to the production query.
+
+    Usage::
+
+        from providers.leaguepedia import get_scoreboard_schema
+        import json
+        print(json.dumps(get_scoreboard_schema(), indent=2))
+    """
+    try:
+        data = _cargo_query({
+            "tables": "ScoreboardPlayers",
+            "fields": "*",
+            "limit": "1",
+        })
+    except Exception as e:
+        logger.error(f"get_scoreboard_schema failed: {e}")
+        return []
+
+    results = data.get("cargoquery", [])
+    if not results:
+        return []
+
+    return list(results[0].get("title", {}).keys())
+
+
 def get_game_scoreboard(
     team1_name: str,
     team2_name: str,
@@ -187,15 +217,27 @@ def get_game_scoreboard(
     }
 
 
-def get_game_players(page_name: str) -> List[Dict]:
+def get_game_players(page_name: str, game_duration_seconds: int = 0) -> List[Dict]:
     """Fetch per-player stats from Leaguepedia ScoreboardPlayers.
 
     Args:
-        page_name: The Leaguepedia GameId (e.g. "CBLOL/2026 Season/Cup_Play-In Last Chance_1_2")
+        page_name:              The Leaguepedia GameId
+                                (e.g. "CBLOL/2026 Season/Cup_Play-In Last Chance_1_2")
+        game_duration_seconds:  Total game duration in seconds.  When provided,
+                                derived per-minute fields (cs_per_min, gold_per_min,
+                                damage_per_min) are computed and stored alongside the
+                                raw stats.  Pass 0 (default) to skip computation.
 
     Returns:
-        List of player dicts with champion, KDA, items, runes, summoner spells, role.
+        List of player dicts with champion, KDA, items, runes, summoner spells, role,
+        and optional extended stats (damage_taken, vision_score, wards_placed,
+        wards_killed) when available from Leaguepedia.
         Empty list if not found.
+
+    Note on optional fields:
+        DamageTaken, VisionScore, WardsPlaced and WardsKilled are included in the
+        Cargo query but may be absent from older tournament records.  Missing values
+        are stored as 0 rather than None so downstream code can do arithmetic safely.
     """
     page_name_escaped = page_name.replace("'", "\\'")
 
@@ -205,6 +247,7 @@ def get_game_players(page_name: str) -> List[Dict]:
             "fields": (
                 "GameId,Name,Team,Champion,Role,"
                 "Kills,Deaths,Assists,Gold,CS,DamageToChampions,"
+                "DamageTaken,VisionScore,WardsPlaced,WardsKilled,"
                 "Items,Runes,SummonerSpells"
             ),
             "where": f"GameId='{page_name_escaped}'",
@@ -219,30 +262,49 @@ def get_game_players(page_name: str) -> List[Dict]:
         logger.debug(f"Leaguepedia: no player records for {page_name}")
         return []
 
+    game_minutes = game_duration_seconds / 60.0 if game_duration_seconds > 0 else 0.0
+
     players = []
     for entry in results:
         row = entry.get("title", {})
 
         rune_data = _parse_runes(row.get("Runes", ""))
 
-        players.append({
-            "summoner_name": row.get("Name", ""),
-            "team_name": row.get("Team", ""),
-            "champion_name": row.get("Champion", ""),
-            "role": row.get("Role", ""),
-            "kills": _safe_int(row.get("Kills")),
-            "deaths": _safe_int(row.get("Deaths")),
-            "assists": _safe_int(row.get("Assists")),
-            "gold": _safe_int(row.get("Gold")),
-            "cs": _safe_int(row.get("CS")),
-            "damage": _safe_int(row.get("DamageToChampions")),
-            "items": _parse_items(row.get("Items", "")),
+        cs     = _safe_int(row.get("CS"))
+        gold   = _safe_int(row.get("Gold"))
+        damage = _safe_int(row.get("DamageToChampions"))
+
+        player_data: Dict[str, Any] = {
+            "summoner_name":   row.get("Name", ""),
+            "team_name":       row.get("Team", ""),
+            "champion_name":   row.get("Champion", ""),
+            "role":            row.get("Role", ""),
+            "kills":           _safe_int(row.get("Kills")),
+            "deaths":          _safe_int(row.get("Deaths")),
+            "assists":         _safe_int(row.get("Assists")),
+            "gold":            gold,
+            "cs":              cs,
+            "damage":          damage,
+            # Extended stats — present when Leaguepedia exposes them
+            "damage_taken":    _safe_int(row.get("DamageTaken")),
+            "vision_score":    _safe_int(row.get("VisionScore")),
+            "wards_placed":    _safe_int(row.get("WardsPlaced")),
+            "wards_killed":    _safe_int(row.get("WardsKilled")),
+            "items":           _parse_items(row.get("Items", "")),
             "summoner_spells": _parse_summoner_spells(row.get("SummonerSpells", "")),
-            "keystone": rune_data["keystone"],
-            "primary_runes": rune_data["primary_runes"],
+            "keystone":        rune_data["keystone"],
+            "primary_runes":   rune_data["primary_runes"],
             "secondary_runes": rune_data["secondary_runes"],
-            "stat_shards": rune_data["stat_shards"],
-        })
+            "stat_shards":     rune_data["stat_shards"],
+        }
+
+        # Derived per-minute fields (only when duration is known)
+        if game_minutes > 0:
+            player_data["cs_per_min"]     = round(cs     / game_minutes, 2)
+            player_data["gold_per_min"]   = round(gold   / game_minutes, 2)
+            player_data["damage_per_min"] = round(damage / game_minutes, 2)
+
+        players.append(player_data)
 
     logger.info(f"Leaguepedia: fetched {len(players)} players for {page_name}")
     return players
@@ -276,8 +338,11 @@ def get_game_data(
     # Rate limit between the two requests
     time.sleep(RATE_LIMIT_SECONDS)
 
-    # Request 2: player stats
-    players = get_game_players(game_info["page_name"])
+    # Request 2: player stats (pass duration so derived per-min fields are computed)
+    players = get_game_players(
+        game_info["page_name"],
+        game_duration_seconds=game_info.get("gamelength_seconds", 0),
+    )
     if not players:
         logger.warning(
             f"Leaguepedia: game record exists ({game_info['page_name']}) "
