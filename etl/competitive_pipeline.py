@@ -108,6 +108,7 @@ class CompetitiveGame:
     patch: str = "unknown"
     participants: List[Dict] = field(default_factory=list)
     riot_enriched: bool = False
+    enrichment_attempts: int = 0
 
     def to_dict(self) -> Dict:
         data = asdict(self)

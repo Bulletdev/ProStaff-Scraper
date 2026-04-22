@@ -46,17 +46,29 @@ def ensure_index(name: str, mapping: Dict) -> None:
 
 
 def bulk_index(index: str, docs: Iterable[Dict]) -> None:
+    """Index documents, skipping any that already exist.
+
+    Uses op_type=create so re-runs never overwrite enrichment progress
+    (enrichment_attempts, riot_enriched, participants) on existing docs.
+    """
     es = get_client()
     actions = []
     for doc in docs:
         doc = dict(doc)
         doc_id = doc.pop("_id", None)
         actions.append({
+            "_op_type": "create",
             "_index": index,
             "_id": doc_id,
             "_source": doc,
         })
-    helpers.bulk(es, actions)
+    success, errors = helpers.bulk(es, actions, raise_on_error=False)
+    real_errors = [
+        e for e in errors
+        if e.get("create", {}).get("status") != 409
+    ]
+    if real_errors:
+        raise RuntimeError(f"Bulk index errors: {real_errors}")
 
 
 def update_document(index: str, doc_id: str, fields: Dict) -> None:
