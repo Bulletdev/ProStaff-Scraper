@@ -41,6 +41,14 @@ def get_client() -> Elasticsearch:
     return Elasticsearch(url)
 
 
+def ping() -> bool:
+    """Return True if the Elasticsearch cluster is reachable, False otherwise."""
+    try:
+        return get_client().ping()
+    except Exception:
+        return False
+
+
 def ensure_index(name: str, mapping: Dict) -> None:
     es = get_client()
     if not es.indices.exists(index=name):

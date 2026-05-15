@@ -45,8 +45,10 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from dotenv import load_dotenv
 load_dotenv()
 
+from tenacity import retry, wait_exponential, stop_after_delay, RetryError
+
 from providers.leaguepedia import get_game_data, RATE_LIMIT_SECONDS
-from indexers.elasticsearch_client import query_unenriched, update_document
+from indexers.elasticsearch_client import query_unenriched, update_document, ping
 
 os.makedirs('logs', exist_ok=True)
 
@@ -206,6 +208,25 @@ class EnrichmentPipeline:
         self.print_stats()
         return processed
 
+    def _wait_for_elasticsearch(self) -> None:
+        """Block until Elasticsearch is reachable or raise after 5 minutes.
+
+        Uses exponential backoff starting at 5s, capped at 60s per attempt.
+        Raises tenacity.RetryError if the cluster is still unreachable after 300s.
+        """
+        @retry(
+            wait=wait_exponential(multiplier=1, min=5, max=60),
+            stop=stop_after_delay(300),
+        )
+        def _ping():
+            if not ping():
+                logger.warning("[ENRICHMENT] Elasticsearch not ready, retrying...")
+                raise ConnectionError("Elasticsearch ping failed")
+
+        logger.info("[ENRICHMENT] Waiting for Elasticsearch to be ready...")
+        _ping()
+        logger.info("[ENRICHMENT] Elasticsearch is ready")
+
     def run_daemon(self, interval_minutes: int = 30):
         """Run enrichment continuously, checking for new unenriched games
         every `interval_minutes` after each batch completes.
@@ -214,6 +235,14 @@ class EnrichmentPipeline:
             f"Starting enrichment daemon - interval: {interval_minutes}min, "
             f"batch: {self.batch_size} games"
         )
+
+        try:
+            self._wait_for_elasticsearch()
+        except RetryError:
+            logger.error(
+                "[ENRICHMENT] Elasticsearch unreachable after 300s, aborting daemon"
+            )
+            raise
 
         def signal_handler(signum, frame):
             logger.info("Received stop signal, shutting down...")
